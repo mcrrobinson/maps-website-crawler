@@ -1,0 +1,8 @@
+{
+  "name": "calista-scorer-tools",
+  "private": true,
+  "description": "Pinned Node tooling used by calista_scorer (Lighthouse).",
+  "dependencies": {
+    "lighthouse": "13.5.0"
+  }
+}

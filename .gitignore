@@ -12,3 +12,5 @@ demo_screenshots/
 test_screenshots/
 experiments/
 *.db
+node_modules/
+results/
