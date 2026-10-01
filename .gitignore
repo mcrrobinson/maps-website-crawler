@@ -1,10 +1,14 @@
 .venv/
 __pycache__/
 *.pyc
-*.db
 *.csv
 .env
 .pytest_cache/
 screenshots/
+weights/
+validation/
+results.json
 demo_screenshots/
+test_screenshots/
 experiments/
+*.db

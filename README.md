@@ -1,219 +1,87 @@
-# maps-website-crawler
+# calista_scorer
 
-Crawls businesses outward from a starting location using the official
-**Google Places API (New)**, collecting name, address, and website for each
-place it finds. Search starts at a single point and expands ring-by-ring in
-a grid of overlapping tiles until a radius/result cap is hit or a ring of
-tiles turns up nothing new.
+Scores how good a website looks using the **Calista rating-based CNN**
+([Delitzas et al., IJHCS 2023](https://github.com/calista-ai/website-aesthetics-research)).
+The model was trained on human aesthetic ratings of website screenshots. Give it a URL and it
+returns a 1-9 rating. There is no LLM involved and no API cost; it runs on CPU in about
+5-10 seconds per site.
 
-Results are stored in a local SQLite database (deduplicated by place ID, so
-re-running a crawl is cheap — already-searched tiles are skipped) and can be
-exported to CSV.
+## How it works
+
+1. Loads the homepage in headless Chrome (Playwright, `channel="chrome"`).
+2. Checks whether the page is a bot check or error page. A page is skipped and **not scored**
+   if any of these is true:
+   - it returned HTTP ≥ 400
+   - its title looks like a challenge ("Just a moment...", "captcha", "access denied", ...)
+   - it is nearly empty and contains challenge text or a Turnstile, reCAPTCHA or hCaptcha widget
+
+   A real site that only has a CAPTCHA on its contact form is still scored.
+3. Clicks obvious cookie-accept or popup-close buttons ("Accept all", "Close", "No thanks",
+   ...). It never submits forms and never touches CAPTCHAs.
+4. Takes a 1280x800 above-the-fold screenshot and resizes it to 256x192, the model's input
+   size. It then scores the screenshot with the CNN.
+
+Outputs:
+- `score` is the native 1-9 rating.
+- `score_10` is the same rating mapped onto 1-10.
+
+In practice scores cluster between about 2.5 and 6.5, so use them for **ranking** sites rather
+than as absolute grades.
 
 ## Setup
 
-1. **Get an API key** (Google Cloud Console):
-   - Create/select a project.
-   - Enable **Places API (New)** and **Geocoding API**.
-   - Create an API key under *APIs & Services > Credentials*.
-   - Billing must be enabled on the project for the Places/Geocoding APIs —
-     Google's free tier covers a meaningful amount of usage, but this app
-     can burn through it quickly on large crawls (see **Cost** below).
-   - If you also want to run website quality audits (see below), get an
-     **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com/)
-     — this is a separate service from Google's.
+```bash
+uv venv --python 3.12 .venv          # or: python3.12 -m venv .venv
+uv pip install -r requirements.txt   # or: .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m calista_scorer download-weights   # ~96 MB, saved to weights/
+```
 
-2. **Install dependencies:**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-3. **Configure your API key and (optionally) a default starting location:**
-   ```bash
-   cp .env.example .env
-   ```
-   Then edit `.env`:
-   ```
-   GOOGLE_MAPS_API_KEY=your-key-here
-   ADDRESS=1600 Amphitheatre Parkway, Mountain View, CA
-   # ...or instead of ADDRESS, set LAT and LNG
-   ```
-   `.env` is loaded automatically and is gitignored, so it's safe to put a
-   real key in it. Values in `.env` are just defaults — passing `--address`,
-   `--lat`/`--lng`, or `--api-key` on the command line always overrides them.
-   (You can also skip `.env` entirely and use `export GOOGLE_MAPS_API_KEY=...`
-   instead.)
+You also need Google Chrome installed, because the browser is launched with `channel="chrome"`.
 
 ## Usage
 
-With `GOOGLE_MAPS_API_KEY` and `ADDRESS` (or `LAT`/`LNG`) set in `.env`, you can
-just run:
 ```bash
-python -m maps_crawler --tile-radius 500 --max-rings 5 --csv results.csv
+# Score sites (results.csv plus screenshots/<site>/ with the screenshots and model_input.png)
+.venv/bin/python -m calista_scorer score https://www.katzsdelicatessen.com/ https://gjelina.com/
+.venv/bin/python -m calista_scorer score --sites-file sites.txt --out results.json
+
+# Score screenshots you already have
+.venv/bin/python -m calista_scorer score-image shot1.png shot2.png
 ```
 
-Or override the location per run without touching `.env`:
+Options for `score`:
+- `--viewport 1024x768`: the model was trained on 1024x768 screenshots.
+- `--headful`: show the browser window.
+- `--artifacts-dir DIR`: choose where screenshots are saved.
 
-Start from an address:
-```bash
-python -m maps_crawler --address "1600 Amphitheatre Parkway, Mountain View, CA" \
-  --tile-radius 500 --max-rings 5 --csv results.csv
-```
+Each result has a `status`:
+- `ok`: scored.
+- `challenge`: a bot check or error page. It isn't scored, but `detail` includes the raw model
+  output for reference.
+- `error`: navigation failed. The command exits with code 1 if any site errors.
 
-Start from your current coordinates (get these from your phone's GPS, or any
-"what's my location" tool — this app does not auto-detect it):
-```bash
-python -m maps_crawler --lat 37.4220 --lng -122.0841 \
-  --tile-radius 500 --max-rings 5 --db mountain_view.db --csv results.csv
-```
+## The model port
 
-Only export businesses that actually have a website on file:
-```bash
-python -m maps_crawler --lat 37.4220 --lng -122.0841 \
-  --csv with_sites.csv --with-website-only
-```
+The authors' code targets TF 1.14 / Keras 2.2.5 / Python 3.6. `calista_scorer/model.py` rebuilds
+the architecture from `rating-based-models/approach1/model1.ipynb`. That includes the custom LRN
+and the grouped conv splits, ported to TF 2 / Keras 3. The authors' released
+`calista_rating_based.h5` weights are loaded by layer name.
 
-Restrict to certain business types ([full type list](https://developers.google.com/maps/documentation/places/web-service/place-types)):
-```bash
-python -m maps_crawler --address "Austin, TX" --types restaurant,cafe,bar
-```
-
-### Key options
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--tile-radius` | 700 | Search radius per tile, in meters |
-| `--max-rings` | 6 | How many rings to expand outward (ring 0 = origin tile) |
-| `--early-stop-empty-rings` | 2 | Stop early after N consecutive rings with zero *new* places |
-| `--max-places` | none | Hard cap on total places collected |
-| `--qps` | 8 | Max requests/second to the Places API |
-| `--types` | all | Comma-separated included place types |
-| `--force` | off | Re-search tiles already marked visited in the DB |
-| `--db` | `places.db` | SQLite database path |
-| `--csv` | none | Export path; only written if set |
-| `--with-website-only` | off | Filter CSV export to places with a website |
-
-Re-running the same command with the same `--db` resumes/extends the crawl
-without re-paying for tiles already searched (bump `--max-rings` to grow the
-covered area).
-
-## Cost
-
-Each tile is one Nearby Search (New) call. A crawl with `--max-rings 6`
-covers roughly `1 + 8 + 16 + 24 + 32 + 40 + 48 = 169` tiles. Nearby Search
-(New) is billed per request under Google's Places API pricing — check the
-[current pricing](https://mapsplatform.google.com/pricing/) and your
-project's quota before running large crawls. Use `--max-places` or a smaller
-`--max-rings` to bound spend on a first run.
-
-## Website quality audits
-
-Once you have a `results.csv` (or any CSV with a `website` column), you can
-run every site through a local browser-based audit that judges the three
-things that actually matter for a small-business website, in priority
-order:
-
-1. **Does it look good** — Claude (vision) scores a full-page screenshot
-   of the homepage against a design rubric (layout, typography, clutter,
-   how dated it looks) and writes a short critique, separately for
-   desktop and mobile.
-2. **Are its links valid** — the homepage plus up to `--max-pages-per-site`
-   internal pages are crawled, every discovered link (internal and
-   external) is checked, and broken ones (4xx/5xx/timeouts/DNS failures)
-   are flagged.
-3. **How fast does it load** — real navigation timing captured from the
-   browser itself.
-
-This replaced an earlier version built on Google's hosted Lighthouse
-(PageSpeed Insights) API, which only ever scored a single URL and had no
-way to verify a site's own links or crawl past the homepage. Getting a
-clean screenshot also requires clearing cookie-consent banners — this
-pipeline runs a real headless Chromium (via Playwright) locally, using
-[DuckDuckGo's `autoconsent`](https://github.com/duckduckgo/autoconsent)
-library (vendored under `vendor/autoconsent/`, the same engine that
-powers cookie handling in Firefox/Brave) plus a text-matching fallback to
-clear consent banners — including ones rendered in a cross-origin CMP
-iframe — before every screenshot.
-
-```bash
-python -m maps_crawler.site_audit_cli --input-csv results.csv
-```
-
-Progress is checkpointed as it runs (each result is committed to
-`site_audit.db` immediately), and re-running the same command skips sites
-that already have a successful audit — so an interrupted run can just be
-resumed.
-
-### Key options
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--input-csv` | `results.csv` | CSV with a website column to audit |
-| `--website-column` | `website` | Column name holding the URL |
-| `--max-pages-per-site` | 15 | Max pages crawled per site for link discovery (homepage included) |
-| `--max-concurrency` | 4 | Max sites crawled concurrently — real browser tabs are heavier than HTTP calls, so this stays low by default |
-| `--vision-model` | `claude-sonnet-5` | Anthropic model used for look-scoring |
-| `--force` | off | Re-audit sites that already have a successful result |
-| `--db` | `site_audit.db` | SQLite database path |
-| `--out-csv` | `site_audit_results.csv` | Per-site CSV export path |
-| `--links-csv` | `site_audit_links.csv` | Per-link CSV export path |
-| `--screenshot-dir` | `screenshots` | Where desktop/mobile screenshots are saved |
-
-Each row in `site_audit_results.csv` has: `website`, `final_url`,
-`http_status`, `pages_crawled`, `load_time_ms`, `desktop_look_score`,
-`desktop_look_summary`, `desktop_issues`, `mobile_look_score`,
-`mobile_look_summary`, `mobile_issues`, `desktop_screenshot_path`,
-`mobile_screenshot_path`, `broken_link_count`, `total_link_count`,
-`error`, `audited_at`. `site_audit_links.csv` has one row per checked
-link: `website`, `source_page`, `link_url`, `status_code`,
-`classification` (`ok`/`redirect`/`broken`/`error`), `error`,
-`checked_at`.
-
-Two cost/runtime notes:
-- **Runtime**: crawling with a real local browser is much slower per site
-  than a single hosted PageSpeed Insights call was. `--max-concurrency`
-  and `--max-pages-per-site` are the levers to bound total wall-clock time
-  across a large `results.csv`.
-- **Vision API cost**: each site makes 2 Claude vision calls (desktop +
-  mobile look-scoring), plus occasional extra calls when the automatic
-  consent-banner clearing needs a vision-guided fallback — same
-  "watch your spend at scale" caveat the Cost section above gives for the
-  Places API.
-- **False positives on link checks**: some sites block automated HEAD/GET
-  requests (e.g. behind bot protection) even though the link works fine
-  for a real visitor — a `broken` classification is a signal worth
-  spot-checking, not a guarantee.
-
-This drives your locally installed **Google Chrome** (via Playwright's
-`channel="chrome"`) rather than downloading a separate Chromium binary, so
-Chrome must already be installed on the machine running the audit.
-
-## Project layout
-
-```
-maps_crawler/
-  cli.py                argument parsing / entrypoint for the crawler
-  crawler.py            ring-by-ring crawl orchestration
-  grid.py                expanding-tile grid math
-  places_client.py      Places API (New) HTTP client (retries, QPS throttling)
-  geocode.py              address -> lat/lng via Geocoding API
-  storage.py              SQLite persistence + CSV export for places
-  site_audit_cli.py      argument parsing / entrypoint for website quality audits
-  site_audit.py            concurrent audit orchestration (async)
-  site_crawler.py          Playwright crawl: navigation, consent dismissal, screenshots, link discovery, timing
-  link_checker.py          concurrent HTTP status checks for discovered links
-  aesthetic_reviewer.py    Claude-vision look-scoring + vision-guided overlay dismissal
-  site_audit_storage.py    SQLite persistence + CSV export for audits and link checks
-vendor/
-  autoconsent/             vendored DuckDuckGo autoconsent bundle (cookie-consent handling)
-tests/
-  test_grid.py             unit tests for the grid math
-```
+`scripts/validate_port.py` checks the port. The check needs torch and the authors' repos cloned
+into `validation/` (see the script's docstring). Results:
+- The TF port and an independent PyTorch port agree to within about 3e-6.
+- On the authors' 24 out-of-sample screenshots, our outputs correlate r = 0.999 with their
+  published predictions. Both correlate equally with human ratings (r = 0.769).
+- Our outputs run about 0.48 lower than the published ones, probably because the published
+  predictions came from a slightly different checkpoint. Ranking is unaffected.
 
 ## Tests
 
 ```bash
-pytest
+.venv/bin/python -m pytest -q
 ```
+
+Some tests need extra setup and skip automatically without it:
+- the model test needs the downloaded weights;
+- the browser tests need Chrome. They serve local pages: a cookie banner, a CAPTCHA on a
+  contact form, a soft challenge page and a 404.
