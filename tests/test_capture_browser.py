@@ -28,6 +28,7 @@ We use cookies. <button onclick="document.getElementById('cookie').remove()">Acc
 <video autoplay muted src="/missing.mp4" style="position:absolute;top:0;width:600px;height:300px"></video>
 </body></html>""",
 }
+USER_AGENTS = []  # User-Agent header of every request the server receives
 
 
 @pytest.fixture(scope="module")
@@ -36,9 +37,15 @@ def server(tmp_path_factory):
     for rel, html in PAGES.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(html)
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
-    handler.log_message = lambda *a: None
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            USER_AGENTS.append(self.headers.get("User-Agent", ""))
+            super().do_GET()
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root)))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
     httpd.shutdown()
@@ -62,6 +69,12 @@ def test_real_site_dismisses_cookie_banner_and_is_not_challenge(server, capturer
     assert not any(a.get("text") == "Send" for a in cap.actions)
     assert {"href": f"{server}/site/menu.html", "nav": True} in cap.links
     assert cap.timings["ttfb_ms"] is not None and cap.timings["fcp_ms"] is not None
+
+
+def test_sends_normal_chrome_user_agent(server, capturer, tmp_path):
+    USER_AGENTS.clear()
+    capturer.capture(f"{server}/site/", str(tmp_path))
+    assert USER_AGENTS and all("Chrome/" in ua and "Headless" not in ua for ua in USER_AGENTS)
 
 
 def test_soft_challenge_detected_nothing_clicked_no_scorable_screenshot(server, capturer, tmp_path):

@@ -49,11 +49,15 @@ sites rather than as absolute grades.
 
 ### Why there's no CAPTCHA solving
 
-The tool doesn't solve CAPTCHAs, disguise the browser or use CAPTCHA-solving services. A site
-that challenges headless Chrome has chosen to keep automated visitors out, so the tool reports
-it as `blocked` instead of scoring a challenge page. Lighthouse emulates a phone and is
-sometimes let through where the tool's browser is blocked. Even so, Lighthouse only runs on
-pages the tool could load itself, so blocked sites get no Lighthouse numbers either.
+The browser sends Chrome's normal user-agent instead of the headless build's, which contains
+`HeadlessChrome`. Some firewalls reject that token outright: royalnavy.mod.uk returns a
+Cloudflare 403 with it and the real page without it. Lighthouse does the same.
+
+Beyond that, the tool doesn't solve CAPTCHAs, use stealth plugins or fingerprint spoofing, or
+use CAPTCHA-solving services. A site that still shows a challenge has chosen to keep automated
+visitors out, so the tool reports it as `blocked` instead of scoring a challenge page.
+Lighthouse only runs on pages the tool could load itself, so blocked sites get no Lighthouse
+numbers either.
 
 ## Setup
 

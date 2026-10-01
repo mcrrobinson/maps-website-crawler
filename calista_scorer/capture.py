@@ -4,9 +4,11 @@ Read-only: the only clicks are on buttons whose text clearly means "accept cooki
 "close popup". It never submits forms and never touches CAPTCHA widgets (those live in
 cross-origin iframes, which the button search does not enter).
 
-Bot-check pages are never worked around. If one appears we give the site's own check a
-few seconds to finish by itself (some "Just a moment..." pages redirect automatically),
-then report the page as a challenge so the caller can skip it.
+The browser sends Chrome's normal user-agent: the headless build's says "HeadlessChrome",
+which some firewalls (Cloudflare rules, for one) reject outright. Beyond that, bot checks
+are never worked around. If one appears we give the site's own check a few seconds to
+finish by itself (some "Just a moment..." pages redirect automatically), then report the
+page as a challenge so the caller can skip it.
 """
 from __future__ import annotations
 
@@ -140,8 +142,9 @@ class PageCapturer:
 
     def __init__(self, viewport: tuple[int, int] = DEFAULT_VIEWPORT, headless: bool = True,
                  nav_timeout_ms: int = 45000, settle_ms: int = 2500, challenge_wait_ms: int = 10000,
-                 media_wait_ms: int = 8000):
+                 media_wait_ms: int = 8000, user_agent: str | None = None):
         self.viewport = viewport
+        self.user_agent = user_agent  # None: the browser's own, minus "Headless"
         self.headless = headless
         self.nav_timeout_ms = nav_timeout_ms
         self.settle_ms = settle_ms
@@ -153,6 +156,10 @@ class PageCapturer:
 
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(channel="chrome", headless=self.headless)
+        if self.user_agent is None:
+            page = self._browser.new_page()
+            self.user_agent = page.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+            page.close()
         return self
 
     def __exit__(self, *exc):
@@ -191,7 +198,8 @@ class PageCapturer:
         os.makedirs(out_dir, exist_ok=True)
         cap = Capture(url=url)
         w, h = self.viewport
-        ctx = self._browser.new_context(viewport={"width": w, "height": h}, locale="en-US")
+        ctx = self._browser.new_context(viewport={"width": w, "height": h}, locale="en-US",
+                                        user_agent=self.user_agent)
         try:
             page = ctx.new_page()
             # Track the latest main-document status so a challenge that redirects to the
