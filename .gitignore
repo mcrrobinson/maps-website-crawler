@@ -6,3 +6,5 @@ __pycache__/
 .env
 .pytest_cache/
 screenshots/
+demo_screenshots/
+experiments/
